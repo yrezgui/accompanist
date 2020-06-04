@@ -22,6 +22,7 @@ import androidx.compose.getValue
 import androidx.compose.onCommit
 import androidx.compose.remember
 import androidx.compose.setValue
+import androidx.compose.state
 import androidx.compose.stateFor
 import androidx.core.graphics.drawable.toBitmap
 import androidx.ui.core.Alignment
@@ -72,20 +73,22 @@ fun CoilImage(
     alignment: Alignment = Alignment.Center,
     contentScale: ContentScale = ContentScale.Fit,
     colorFilter: ColorFilter? = null,
-    onRequestCompleted: (RequestResult) -> Unit = emptySuccessLambda,
     getSuccessPainter: @Composable (SuccessResult) -> Painter = { defaultSuccessPainterGetter(it) },
     getFailurePainter: @Composable (ErrorResult) -> Painter? = { defaultFailurePainterGetter(it) },
-    modifier: Modifier = Modifier
+    transition: @Composable (TransitionScope.() -> Painter)? = null,
+    modifier: Modifier = Modifier,
+    onRequestCompleted: (RequestResult) -> Unit = emptySuccessLambda
 ) {
     CoilImage(
         request = GetRequest.Builder(ContextAmbient.current).data(data).build(),
         alignment = alignment,
         contentScale = contentScale,
         colorFilter = colorFilter,
-        onRequestCompleted = onRequestCompleted,
         getSuccessPainter = getSuccessPainter,
         getFailurePainter = getFailurePainter,
-        modifier = modifier
+        getTransitionPainter = transition,
+        modifier = modifier,
+        onRequestCompleted = onRequestCompleted
     )
 }
 
@@ -108,14 +111,18 @@ fun CoilImage(
     alignment: Alignment = Alignment.Center,
     contentScale: ContentScale = ContentScale.Fit,
     colorFilter: ColorFilter? = null,
-    onRequestCompleted: (RequestResult) -> Unit = emptySuccessLambda,
     getSuccessPainter: @Composable (SuccessResult) -> Painter = { defaultSuccessPainterGetter(it) },
     getFailurePainter: @Composable (ErrorResult) -> Painter? = { defaultFailurePainterGetter(it) },
-    modifier: Modifier = Modifier
+    getTransitionPainter: @Composable (TransitionScope.() -> Painter)? = null,
+    modifier: Modifier = Modifier,
+    onRequestCompleted: (RequestResult) -> Unit = emptySuccessLambda
 ) {
     WithConstraints(modifier) {
         val requestWidth = constraints.requestWidth.value
         val requestHeight = constraints.requestHeight.value
+
+        var previousResultPainter by state<Painter?> { null }
+        var currentPainter by state<Painter?> { null }
 
         // Execute the request using executeAsComposable(), which guards the actual execution
         // so that the request is only run if the request changes.
@@ -131,38 +138,77 @@ fun CoilImage(
                     .build()
                     .executeAsComposable()
             }
-            else -> {
-                // Otherwise we have a zero size, so no point executing a request
-                null
-            }
+            // Otherwise we have a zero size, so no point executing a request
+            else -> null
         }
 
-        onCommit(result) {
-            if (result != null) {
-                onRequestCompleted(result)
-            }
-        }
-
-        val painter = when (result) {
+        val resultPainter = when (result) {
             is SuccessResult -> getSuccessPainter(result)
             is ErrorResult -> getFailurePainter(result)
             else -> null
         }
 
+        if (getTransitionPainter != null && result is SuccessResult) {
+            val transitionScope = remember(previousResultPainter, resultPainter) {
+                TransitionScopeImpl(
+                    currentPainter = previousResultPainter,
+                    resultPainter = resultPainter!!,
+                    result = result,
+                    onFinished = {
+                        // Clear out the stored previous result painter
+                        previousResultPainter = resultPainter
+                        currentPainter = resultPainter
+                    }
+                )
+            }
+            currentPainter = getTransitionPainter(transitionScope)
+        } else {
+            // If we don't have a transition, just use the result painter
+            currentPainter = resultPainter
+            previousResultPainter = resultPainter
+        }
+
         // TODO: if we have an error but no painter, we should probably
         // log something
 
-        if (painter != null) {
+        val p = currentPainter
+        if (p != null) {
             Image(
-                painter = painter,
+                painter = p,
                 contentScale = contentScale,
                 alignment = alignment,
                 colorFilter = colorFilter,
                 modifier = modifier
             )
         }
+
+        onCommit(result) {
+            if (result != null) onRequestCompleted(result)
+        }
+
         // TODO: should expose something to do when the image is loading, etc
     }
+}
+
+interface TransitionScope {
+    val currentPainter: Painter?
+
+    val resultPainter: Painter
+    val result: SuccessResult
+
+    /**
+     * The responsibility is that you need should call this whenever the transition has finished.
+     */
+    fun onFinish()
+}
+
+private data class TransitionScopeImpl(
+    override val currentPainter: Painter?,
+    override val resultPainter: Painter,
+    override val result: SuccessResult,
+    private val onFinished: () -> Unit
+) : TransitionScope {
+    override fun onFinish() = onFinished()
 }
 
 /**

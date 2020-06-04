@@ -65,10 +65,10 @@ private const val defaultTransitionDuration = 1000
             data = data,
             alignment = alignment,
             contentScale = contentScale,
-            getSuccessPainter = { crossfadePainter(it, durationMs = crossfadeDuration) },
+            transition = { crossfade(duration = crossfadeDuration) },
             modifier = modifier
          )""",
-        "dev.chrisbanes.accompanist.coil.crossfadePainter",
+        "dev.chrisbanes.accompanist.coil.crossfade",
         "dev.chrisbanes.accompanist.coil.CoilImage"
     )
 )
@@ -84,7 +84,7 @@ fun CoilImageWithCrossfade(
         data = data,
         alignment = alignment,
         contentScale = contentScale,
-        getSuccessPainter = { crossfadePainter(it, durationMs = crossfadeDuration) },
+        transition = { crossfade(duration = crossfadeDuration) },
         modifier = modifier
     )
 }
@@ -113,10 +113,10 @@ fun CoilImageWithCrossfade(
             request = request,
             alignment = alignment,
             contentScale = contentScale,
-            getSuccessPainter = { crossfadePainter(it, durationMs = crossfadeDuration) },
+            transition = { crossfade(duration = crossfadeDuration) },
             modifier = modifier
          )""",
-        "dev.chrisbanes.accompanist.coil.crossfadePainter",
+        "dev.chrisbanes.accompanist.coil.crossfade",
         "dev.chrisbanes.accompanist.coil.CoilImage"
     )
 )
@@ -132,84 +132,77 @@ fun CoilImageWithCrossfade(
         request = request,
         alignment = alignment,
         contentScale = contentScale,
-        getSuccessPainter = { crossfadePainter(it, durationMs = crossfadeDuration) },
+        getTransitionPainter = { crossfade(duration = crossfadeDuration) },
         modifier = modifier
     )
 }
 
 /**
- * A composable function which runs an fade animation on the given [result], returning the
- * [Painter] which should be used to paint the [ImageAsset].
+ * A composable function which runs an fade animation on [TransitionScope.result],
+ * returning the [Painter] which should be used to paint the [ImageAsset].
  *
  * The animation fades in the image's saturation, alpha and exposure. More information on the
  * pattern can be seen [here](https://material.io/archive/guidelines/patterns/loading-images.html).
  *
- * @param result The result of a image fetch.
  * @param skipFadeWhenLoadedFromMemory Whether the fade animation should be skipped when the result
  * has been loaded from memory.
- * @param durationMs The duration of the crossfade animation in milliseconds.
+ * @param duration The duration of the transition in milliseconds.
  * @param clock The animation clock.
  */
 @Composable
-fun crossfadePainter(
-    result: SuccessResult,
+fun TransitionScope.crossfade(
     skipFadeWhenLoadedFromMemory: Boolean = true,
-    durationMs: Int = defaultTransitionDuration,
+    duration: Int = defaultTransitionDuration,
     clock: AnimationClockObservable = AnimationClockAmbient.current.asDisposableClock()
 ): Painter {
-    return if (skipFadeWhenLoadedFromMemory && result.isFromMemory) {
+    if (skipFadeWhenLoadedFromMemory && result.isFromMemory) {
         // If can skip the fade when loaded from memory, we do not need to run the animation on it
-        defaultSuccessPainterGetter(result)
-    } else {
-        val observablePainter = remember {
-            ObservableCrossfade(result, durationMs, clock).also { it.start() }
-        }
-        if (!observablePainter.isFinished) {
-            // If the animation is running, using it's painter
-            observablePainter.painter
-        } else {
-            // If the animation has finished, revert back to the default painter
-            defaultSuccessPainterGetter(result)
-        }
+        return defaultSuccessPainterGetter(result)
     }
+
+    val observablePainter = remember {
+        ObservableCrossfade(
+            image = result.image,
+            crossfadeDuration = duration,
+            clock = clock,
+            onFinish = ::onFinish
+        ).also { it.start() }
+    }
+    return observablePainter.painter
 }
 
 @Suppress("JoinDeclarationAndAssignment")
 private class ObservableCrossfade(
-    result: SuccessResult,
+    image: ImageAsset,
     crossfadeDuration: Int,
-    clock: AnimationClockObservable
+    clock: AnimationClockObservable,
+    onFinish: () -> Unit
 ) {
     var painter: Painter by mutableStateOf(
         createCrossfadePainter(
-            image = result.image,
+            image = image,
             saturation = 0f,
             alpha = 0f,
             brightness = 0f
         )
     )
 
-    var isFinished by mutableStateOf(false)
-        private set
-
-    private val animation: TransitionAnimation<CrossfadeTransition.State>
+    private val animation = CrossfadeTransition.definition(crossfadeDuration).createAnimation(clock)
 
     init {
-        animation = CrossfadeTransition.definition(crossfadeDuration).createAnimation(clock)
-
         animation.onUpdate = {
             // Animation tick, so update the painter using the current transition property values
             painter = createCrossfadePainter(
-                image = result.image,
+                image = image,
                 saturation = animation[CrossfadeTransition.Saturation],
                 alpha = animation[CrossfadeTransition.Alpha],
                 brightness = animation[CrossfadeTransition.Brightness]
             )
         }
 
-        animation.onStateChangeFinished = {
-            if (it == CrossfadeTransition.State.Loaded) {
-                isFinished = true
+        animation.onStateChangeFinished = { state ->
+            if (state == CrossfadeTransition.State.Loaded) {
+                onFinish()
             }
         }
     }
